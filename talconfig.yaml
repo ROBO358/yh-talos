@@ -1,0 +1,111 @@
+clusterName: yh-cluster
+endpoint: https://192.168.1.200:6443
+talosVersion: v1.12.6
+kubernetesVersion: v1.35.2
+
+nodes:
+  # --- Control Plane ---
+  - hostname: c1-k8s-yh
+    ipAddress: 192.168.1.201
+    controlPlane: true
+    installDisk: /dev/nvme0n1
+    machineSpec:
+      mode: metal
+      arch: amd64
+      secureboot: true
+      useUKI: true
+    networkInterfaces:
+      - interface: enp1s0
+        addresses:
+          - 192.168.1.201/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.1.1
+        vip:
+          ip: 192.168.1.200
+  - hostname: c2-k8s-yh
+    ipAddress: 192.168.1.202
+    controlPlane: true
+    installDisk: /dev/nvme0n1
+    machineSpec:
+      mode: metal
+      arch: amd64
+      secureboot: true
+      useUKI: true
+    networkInterfaces:
+      - interface: enp1s0
+        addresses:
+          - 192.168.1.202/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.1.1
+        vip:
+          ip: 192.168.1.200
+  - hostname: c3-k8s-yh
+    ipAddress: 192.168.1.203
+    controlPlane: true
+    installDisk: /dev/nvme0n1
+    machineSpec:
+      mode: metal
+      arch: amd64
+      secureboot: true
+      useUKI: true
+    networkInterfaces:
+      - interface: enp1s0
+        addresses:
+          - 192.168.1.203/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.1.1
+        vip:
+          ip: 192.168.1.200
+
+  # --- Worker ---
+  - hostname: w1-k8s-yh
+    ipAddress: 192.168.1.211
+    controlPlane: false
+    installDisk: /dev/nvme0n1
+    machineSpec:
+      mode: metal
+      arch: amd64
+      secureboot: true
+      useUKI: true
+    networkInterfaces:
+      - interface: enp1s0
+        addresses:
+          - 192.168.1.211/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.1.1
+  - hostname: w2-k8s-yh
+    ipAddress: 192.168.1.212
+    controlPlane: false
+    installDisk: /dev/nvme0n1
+    machineSpec:
+      mode: metal
+      arch: amd64
+      secureboot: true
+      useUKI: true
+    networkInterfaces:
+      - interface: enp1s0
+        addresses:
+          - 192.168.1.212/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.1.1
+  - hostname: w3-k8s-yh
+    ipAddress: 192.168.1.213
+    controlPlane: false
+    installDisk: /dev/nvme0n1
+    machineSpec:
+      mode: metal
+      arch: amd64
+      secureboot: true
+      useUKI: true
+    networkInterfaces:
+      - interface: enp1s0
+        addresses:
+          - 192.168.1.213/24
+        routes:
+          - network: 0.0.0.0/0
+            gateway: 192.168.1.1
