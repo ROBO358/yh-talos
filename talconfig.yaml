@@ -3,8 +3,25 @@ endpoint: https://192.168.1.200:6443
 talosVersion: v1.12.6
 kubernetesVersion: v1.35.2
 
+cniConfig:
+  name: none
+
+patches:
+  - |-
+    cluster:
+      proxy:
+        disabled: true
+
+# ref: https://docs.siderolabs.com/kubernetes-guides/cni/deploying-cilium
+# skipEnvsubst: true preserves ${BIN_PATH} in Cilium init container commands
+# Top-level placement required: talhelper v3 silently ignores controlPlane.inlineManifests.
+# Workers receive this manifest but Talos ignores inlineManifests on non-bootstrap nodes.
+inlineManifests:
+  - name: cilium
+    contents: "@./cilium/bootstrap.yaml"
+    skipEnvsubst: true
+
 nodes:
-  # --- Control Plane ---
   - hostname: c1-k8s-yh
     ipAddress: 192.168.1.201
     controlPlane: true
@@ -60,7 +77,6 @@ nodes:
         vip:
           ip: 192.168.1.200
 
-  # --- Worker ---
   - hostname: w1-k8s-yh
     ipAddress: 192.168.1.211
     controlPlane: false

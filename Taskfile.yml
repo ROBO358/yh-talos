@@ -1,41 +1,23 @@
 version: '3'
 
-# ──────────────────────────────────────────────
-# Retrieve the age private key from 1Password
-#
-# OP_CMD: auto-detect op / op.exe
-#   - Uses "op" if a native Linux binary is available
-#   - Uses "op.exe" if only the Windows binary exists (WSL2)
-#   Note: vars sh: runs in a non-interactive /bin/sh, so shell aliases
-#         (e.g. op=op.exe) are not expanded — command -v detects accurately
-#
-# op run is not available (Windows process cannot spawn Linux binaries)
-# → Use op item get --reveal each time and inject via SOPS_AGE_KEY
-# ──────────────────────────────────────────────
+# vars.sh runs in a non-interactive /bin/sh where shell aliases (e.g. op=op.exe) are not expanded.
+# op run cannot spawn Linux binaries from a Windows process, so inject the key via SOPS_AGE_KEY.
 vars:
   OP_CMD:
     sh: command -v op >/dev/null 2>&1 && echo "op" || echo "op.exe"
   OP_VAULT: Private
   OP_ITEM: talhelper-age-key
   OP_FIELD: private key
+  CILIUM_VERSION: "1.19.2"
 
-# The age key is kept only in shell variable _KEY and immediately unset
-# to avoid it appearing in Taskfile verbose output
 env:
   TALOSCONFIG: ./clusterconfig/talosconfig
 
-# ──────────────────────────────────────────────
-# Default: show task list
-# ──────────────────────────────────────────────
 tasks:
   default:
     silent: true
     cmds:
       - task --list
-
-  # ────────────────────────────────
-  # secrets: SOPS encrypt / decrypt
-  # ────────────────────────────────
 
   secrets:encrypt:
     desc: "Encrypt talsecret.sops.yaml with the age key"
@@ -78,17 +60,42 @@ tasks:
         unset _KEY _AGE_PUBKEY _PLAIN _ENC
         echo "New secrets generated and talsecret.sops.yaml updated"
 
-  # ────────────────────────────────
-  # genconfig: generate node config files
-  # ────────────────────────────────
+  cilium:render:
+    desc: "Render Cilium bootstrap manifest from cilium/values.yaml"
+    sources:
+      - cilium/values.yaml
+      - Taskfile.yml  # detect CILIUM_VERSION changes
+    generates:
+      - cilium/bootstrap.yaml
+    cmds:
+      - mkdir -p cilium
+      - |
+        set -e
+        trap 'rm -f cilium/bootstrap_helm.tmp cilium/bootstrap.yaml.tmp' EXIT
+        # Intermediate file: prevents yq from silently swallowing helm template errors via pipe
+        helm template cilium cilium \
+          --repo https://helm.cilium.io/ \
+          --version {{.CILIUM_VERSION}} \
+          --namespace kube-system \
+          --values cilium/values.yaml \
+        > cilium/bootstrap_helm.tmp
+        # helm template omits meta.helm.sh/* annotations; add them so Flux HelmRelease can adopt
+        yq eval-all '
+            .metadata.annotations["meta.helm.sh/release-name"] = "cilium" |
+            .metadata.annotations["meta.helm.sh/release-namespace"] = "kube-system" |
+            .metadata.labels["app.kubernetes.io/managed-by"] = "Helm"
+          ' cilium/bootstrap_helm.tmp > cilium/bootstrap.yaml.tmp
+        rm cilium/bootstrap_helm.tmp
+        mv cilium/bootstrap.yaml.tmp cilium/bootstrap.yaml
 
   genconfig:
     desc: "Generate node config files with talhelper genconfig"
-    # Skip if inputs are unchanged (fingerprint cache)
+    deps: [cilium:render]
     sources:
       - talconfig.yaml
       - talsecret.sops.yaml
       - .sops.yaml
+      - cilium/bootstrap.yaml
     generates:
       - clusterconfig/*.yaml
     cmds:
@@ -96,10 +103,6 @@ tasks:
         _KEY=$({{.OP_CMD}} item get "{{.OP_ITEM}}" --vault "{{.OP_VAULT}}" --fields "{{.OP_FIELD}}" --reveal 2>&1)
         SOPS_AGE_KEY="$_KEY" talhelper genconfig
         unset _KEY
-
-  # ────────────────────────────────
-  # apply: apply configuration
-  # ────────────────────────────────
 
   apply:
     desc: "Apply configuration to all nodes"
@@ -124,11 +127,11 @@ tasks:
   secrets:rotate:
     desc: "Rotate secrets and rebuild the cluster (no physical access required, uses current talosconfig)"
     prompt: "This will regenerate secrets and reboot all nodes. All cluster data will be wiped. Continue?"
+    deps: [cilium:render]
     cmds:
       - |
         set -e
 
-        # On failure, print recovery instructions
         _fail() {
           echo ""
           echo "An error occurred."
@@ -139,13 +142,10 @@ tasks:
         }
         trap '_fail' ERR
 
-        # Step 1: Back up current talosconfig (will be overwritten when new secrets are generated)
         cp ./clusterconfig/talosconfig /tmp/talosconfig_pre_rotate.yaml
         echo ">>> Backed up current talosconfig to /tmp/talosconfig_pre_rotate.yaml"
 
-        # Step 2: Regenerate secrets
-        # talsecret.sops.yaml is only overwritten after successful encryption
-        # to avoid destroying the existing file on failure
+        # Write to temp files first to avoid destroying talsecret.sops.yaml on encryption failure
         _KEY=$({{.OP_CMD}} item get "{{.OP_ITEM}}" --vault "{{.OP_VAULT}}" --fields "{{.OP_FIELD}}" --reveal 2>&1)
         _AGE_PUBKEY=$(yq '.creation_rules[0].age' .sops.yaml)
         _PLAIN=$(mktemp /tmp/talsecret_plain_XXXXXX.yaml)
@@ -156,15 +156,11 @@ tasks:
         mv "$_ENC" talsecret.sops.yaml
         echo ">>> New secrets generated"
 
-        # Step 3: Regenerate node configs with the new secrets
         SOPS_AGE_KEY="$_KEY" talhelper genconfig
         unset _KEY _AGE_PUBKEY _PLAIN _ENC
         echo ">>> Node configs regenerated"
 
-        # Step 4: Stage new config on all nodes using the old talosconfig
-        # --mode=staged: saves config to STATE and applies it on next reboot (handles CA change)
-        # Note: staged config is stored in STATE. The EPHEMERAL wipe below does not touch STATE,
-        #       so the staged config will be active after reboot.
+        # --mode=staged: writes config to STATE, applied on next reboot (required when CA changes)
         echo ">>> Staging new config on all nodes..."
         for _NODE in $(yq '.nodes[].ipAddress' talconfig.yaml); do
           _HOSTNAME=$(yq ".nodes[] | select(.ipAddress == \"$_NODE\") | .hostname" talconfig.yaml)
@@ -176,27 +172,23 @@ tasks:
         done
         echo ">>> All nodes staged"
 
-        # Step 5: Wipe EPHEMERAL and reboot all nodes using the old talosconfig
-        # STATE (with the staged new config) is preserved, so nodes boot with the new config
-        # Note: after the CA changes, nodes start with new certs and the old talosconfig
-        #       watch loop will keep failing. timeout 120 cuts off after the command is sent.
-        _ALL_NODES=$(yq '.nodes[].ipAddress' talconfig.yaml | paste -sd',')
-        echo ">>> Rebooting all nodes (EPHEMERAL wipe): $_ALL_NODES"
-        timeout 120 talosctl --talosconfig /tmp/talosconfig_pre_rotate.yaml reset \
-          --nodes "$_ALL_NODES" \
-          --system-labels-to-wipe EPHEMERAL \
-          --graceful=false \
-          --reboot || {
-          _EXIT=$?
-          # exit 124 = timeout (expected: watch loop fails after CA change)
-          # any other exit code = real error (node unreachable, etc.)
-          [ "$_EXIT" -eq 124 ] || { echo "talosctl reset failed (exit: $_EXIT)"; _fail; }
-        }
+        # Reset each node via its own endpoint: a shared endpoint drops when its node reboots
+        echo ">>> Rebooting all nodes (EPHEMERAL wipe, parallel per-node)..."
+        for _NODE in $(yq '.nodes[].ipAddress' talconfig.yaml); do
+          (
+            talosctl --talosconfig /tmp/talosconfig_pre_rotate.yaml reset \
+              --nodes "$_NODE" \
+              --endpoints "$_NODE" \
+              --system-labels-to-wipe EPHEMERAL \
+              --graceful=false \
+              --reboot >/dev/null 2>&1
+            echo "    $_NODE: reset sent"
+          ) &
+        done
+        wait
         rm -f /tmp/talosconfig_pre_rotate.yaml
         trap - ERR
 
-        # Step 6: Wait for all nodes to come back using the new talosconfig
-        # After the CA change, connect using the new talosconfig (clusterconfig/talosconfig)
         echo ">>> Waiting for nodes to come back (using new talosconfig)..."
         sleep 20
         for _NODE in $(yq '.nodes[].ipAddress' talconfig.yaml); do
@@ -213,35 +205,33 @@ tasks:
         echo "    task bootstrap"
         echo "    task kubeconfig"
 
-  # ────────────────────────────────
-  # destroy / rebuild: cluster rebuild
-  #
-  # Wipes only the EPHEMERAL partition (etcd and kubelet data).
-  # The STATE partition (Machineconfig, static IP config) is preserved,
-  # so nodes remain reachable at the same IP after reset.
-  # Unlike a full talosctl reset, apply is not needed after destroy.
-  # ────────────────────────────────
-
   destroy:
     desc: "Wipe Kubernetes data on all nodes and reboot (Machineconfig and IP config preserved)"
     prompt: "This will wipe the EPHEMERAL partition (etcd and kubelet data) on all nodes. Continue?"
     silent: true
     cmds:
       - |
-        ALL_NODES=$(yq '.nodes[].ipAddress' talconfig.yaml | paste -sd',')
-        echo ">>> Wiping EPHEMERAL partition on: $ALL_NODES"
-        talosctl reset \
-          --nodes "$ALL_NODES" \
-          --system-labels-to-wipe EPHEMERAL \
-          --graceful=false \
-          --reboot
+        # Reset each node via its own endpoint: a shared endpoint drops when its node reboots
+        echo ">>> Wiping EPHEMERAL partition on all nodes (parallel)..."
+        for NODE in $(yq '.nodes[].ipAddress' talconfig.yaml); do
+          (
+            talosctl reset \
+              --nodes "$NODE" \
+              --endpoints "$NODE" \
+              --system-labels-to-wipe EPHEMERAL \
+              --graceful=false \
+              --reboot >/dev/null 2>&1
+            echo "    $NODE: reset sent"
+          ) &
+        done
+        wait
         echo ">>> Waiting for nodes to come back..."
         sleep 15
         for NODE in $(yq '.nodes[].ipAddress' talconfig.yaml); do
           echo -n "    $NODE: "
           for i in $(seq 1 24); do
-            talosctl version --nodes "$NODE" >/dev/null 2>&1 && echo "back" && break
-            [ "$i" = "24" ] && echo "timed out"
+            talosctl version --nodes "$NODE" --endpoints "$NODE" >/dev/null 2>&1 && echo "back" && break
+            [ "$i" -eq 24 ] && echo "timed out"
             sleep 5
           done
         done
@@ -254,34 +244,22 @@ tasks:
       - task: bootstrap
       - task: kubeconfig
 
-  # ────────────────────────────────
-  # bootstrap: initial cluster startup
-  # ────────────────────────────────
-
   bootstrap:
     desc: "Bootstrap the cluster (first time only, runs on c1 node)"
     prompt: "Bootstrap is only valid on the first run. Running on an existing cluster will corrupt etcd. Continue?"
     cmds:
       - talhelper gencommand bootstrap | bash
 
-  # ────────────────────────────────
-  # kubeconfig: fetch cluster access config
-  # ────────────────────────────────
-
   kubeconfig:
     desc: "Fetch kubeconfig and merge into ~/.kube/config"
     cmds:
       - talhelper gencommand kubeconfig | bash
 
-  # ────────────────────────────────
-  # upgrade: version upgrades
-  # ────────────────────────────────
-
   upgrade:talos:
     desc: "Upgrade Talos on all nodes (uses talosVersion from talconfig.yaml)"
     prompt: "This will upgrade Talos. Check talosVersion in talconfig.yaml before proceeding. Continue?"
+    deps: [cilium:render]
     cmds:
-      # Regenerate config after version change before upgrading
       - |
         _KEY=$({{.OP_CMD}} item get "{{.OP_ITEM}}" --vault "{{.OP_VAULT}}" --fields "{{.OP_FIELD}}" --reveal 2>&1)
         SOPS_AGE_KEY="$_KEY" talhelper genconfig
@@ -292,6 +270,7 @@ tasks:
     desc: "Upgrade Talos on a specific node (NODE=<hostname>)"
     requires:
       vars: [NODE]
+    deps: [cilium:render]
     cmds:
       - |
         _KEY=$({{.OP_CMD}} item get "{{.OP_ITEM}}" --vault "{{.OP_VAULT}}" --fields "{{.OP_FIELD}}" --reveal 2>&1)
@@ -304,10 +283,6 @@ tasks:
     prompt: "This will upgrade Kubernetes. Check kubernetesVersion in talconfig.yaml before proceeding. Continue?"
     cmds:
       - talhelper gencommand upgrade-k8s | bash
-
-  # ────────────────────────────────
-  # health: cluster / node status checks
-  # ────────────────────────────────
 
   health:
     desc: "Run a full cluster health check (talosctl health)"
@@ -327,14 +302,6 @@ tasks:
       - |
         ALL_NODES=$(yq '.nodes[].ipAddress' talconfig.yaml | paste -sd',')
         talosctl get machinestatus --nodes "$ALL_NODES"
-
-  # ────────────────────────────────
-  # reboot: safe node reboot
-  #
-  # Unlike talosctl reset, preserves config and reboots the OS only.
-  # workers / controlplanes reboot one at a time, waiting for each
-  # node to come back before proceeding to the next.
-  # ────────────────────────────────
 
   reboot:node:
     desc: "Safely reboot a specific node (NODE=<IP or hostname>)"
