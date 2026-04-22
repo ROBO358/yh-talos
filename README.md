@@ -126,17 +126,11 @@ task kubeconfig
 - [x] SOPS + age encryption for cluster secrets (age key stored in 1Password)
 - [x] Taskfile automation (genconfig, apply, bootstrap, upgrade, health, reboot, destroy, rebuild)
 - [x] Flux bootstrap → [homelab-gitops](https://github.com/ROBO358/homelab-gitops)
-
-### In Progress
-
-- [ ] **Cilium migration** — replace default flannel + kube-proxy with Cilium (CNI + kube-proxy replacement via KubePrism + L2 Announcements)
-  - Bootstrap manifest generation is owned by this repo (`cilium/values.yaml` + `task genconfig`)
-  - Day-2 operations and runtime configuration are in [homelab-gitops](https://github.com/ROBO358/homelab-gitops)
+- [x] Cilium CNI — kube-proxy replacement + WireGuard encryption + L2 Announcements + Gateway API + Hubble (bootstrap via `inlineManifests`, day-2 in homelab-gitops)
+- [x] Worker nodes prepared for Longhorn — `siderolabs/iscsi-tools` + `siderolabs/util-linux-tools` extensions, `/var/mnt/longhorn` kubelet extraMount
 
 ### Next (managed in homelab-gitops)
 
-- [ ] Remove MetalLB once Cilium L2 Announcements is verified
+- [ ] Longhorn — persistent storage on worker NVMe with 3x replication + default StorageClass
 - [ ] Ingress Controller (ingress-nginx) — HTTP/HTTPS routing
-- [ ] Longhorn — persistent storage using node disks
 - [ ] RBAC — cluster access control
-- [ ] External Secrets Operator + 1Password — replace Kubernetes Secrets with 1Password-backed secrets (including Flux's own credentials)
