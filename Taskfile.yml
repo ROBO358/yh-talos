@@ -278,6 +278,21 @@ tasks:
         unset _KEY
       - talhelper gencommand upgrade --node "{{.NODE}}" | bash
 
+  upgrade:talos:node:preserve:
+    desc: "Upgrade Talos on a specific node keeping data (NODE=<hostname>) — use for Longhorn workers"
+    prompt: "Upgrade {{.NODE}} with --preserve (keeps /var/mnt/longhorn). Continue?"
+    requires:
+      vars: [NODE]
+    deps: [cilium:render]
+    cmds:
+      - |
+        _KEY=$({{.OP_CMD}} item get "{{.OP_ITEM}}" --vault "{{.OP_VAULT}}" --fields "{{.OP_FIELD}}" --reveal 2>&1)
+        SOPS_AGE_KEY="$_KEY" talhelper genconfig
+        unset _KEY
+      - |
+        _CMD=$(talhelper gencommand upgrade --node "{{.NODE}}" | tr -d ';')
+        eval "$_CMD --preserve"
+
   upgrade:k8s:
     desc: "Upgrade Kubernetes (uses kubernetesVersion from talconfig.yaml)"
     prompt: "This will upgrade Kubernetes. Check kubernetesVersion in talconfig.yaml before proceeding. Continue?"

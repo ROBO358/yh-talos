@@ -81,11 +81,29 @@ nodes:
     ipAddress: 192.168.1.211
     controlPlane: false
     installDisk: /dev/nvme0n1
-    machineSpec:
+    machineSpec: &worker-machinespec
       mode: metal
       arch: amd64
       secureboot: true
       useUKI: true
+    schematic: &worker-schematic
+      customization:
+        systemExtensions:
+          officialExtensions:
+            - siderolabs/iscsi-tools
+            - siderolabs/util-linux-tools
+    patches: &worker-patches
+      - |-
+        machine:
+          kubelet:
+            extraMounts:
+              - destination: /var/mnt/longhorn
+                type: bind
+                source: /var/mnt/longhorn
+                options:
+                  - bind
+                  - rshared
+                  - rw
     networkInterfaces:
       - interface: enp1s0
         addresses:
@@ -97,11 +115,9 @@ nodes:
     ipAddress: 192.168.1.212
     controlPlane: false
     installDisk: /dev/nvme0n1
-    machineSpec:
-      mode: metal
-      arch: amd64
-      secureboot: true
-      useUKI: true
+    machineSpec: *worker-machinespec
+    schematic: *worker-schematic
+    patches: *worker-patches
     networkInterfaces:
       - interface: enp1s0
         addresses:
@@ -113,11 +129,9 @@ nodes:
     ipAddress: 192.168.1.213
     controlPlane: false
     installDisk: /dev/nvme0n1
-    machineSpec:
-      mode: metal
-      arch: amd64
-      secureboot: true
-      useUKI: true
+    machineSpec: *worker-machinespec
+    schematic: *worker-schematic
+    patches: *worker-patches
     networkInterfaces:
       - interface: enp1s0
         addresses:
