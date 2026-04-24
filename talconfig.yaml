@@ -11,6 +11,12 @@ patches:
     cluster:
       proxy:
         disabled: true
+      apiServer:
+        extraArgs:
+          oidc-issuer-url: https://dex.yh.k8s.tsuru.run
+          oidc-client-id: kubelogin
+          oidc-username-claim: preferred_username
+          oidc-groups-claim: groups
 
 # ref: https://docs.siderolabs.com/kubernetes-guides/cni/deploying-cilium
 # skipEnvsubst: true preserves ${BIN_PATH} in Cilium init container commands
